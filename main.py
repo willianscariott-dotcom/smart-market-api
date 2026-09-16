@@ -31,36 +31,44 @@ def read_root():
 async def processar_nota(request: Request):
     try:
         data = await request.json()
-        url = data.get("url_qrcode", "").strip()
+        url_original = data.get("url_qrcode", "").strip()
 
-        if not url:
+        if not url_original:
             return JSONResponse(content={"erro": "URL não fornecida"}, status_code=400)
+
+        # REDIRECIONAMENTO AUTOMÁTICO: Força o carregamento da página SVRS que possui os produtos
+        match_param = re.search(r'p=([^&]+)', url_original)
+        if match_param:
+            param_p = match_param.group(1)
+            url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={param_p}"
+        elif re.search(r'\d{44}', url_original):
+            chave_44 = re.search(r'\d{44}', url_original).group()
+            url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave_44}"
+        else:
+            url = url_original
 
         sh = get_sheet()
         aba_notas = sh.worksheet("Notas")
         aba_produtos = sh.worksheet("Produtos_Comprados")
 
-        # --- EXTRAÇÃO REAL (PORTAL SVRS RS) ---
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
         # 1. Extrair Chave de Acesso
-        match = re.search(r'p=(\d{44})', url)
-        chave = match.group(1) if match else "CHAVE_DESCONHECIDA"
+        match_chave = re.search(r'(\d{44})', url)
+        chave = match_chave.group(1) if match_chave else "CHAVE_DESCONHECIDA"
 
-        # Trava de Duplicidade
+        # Trava de Duplicidade na aba Notas
         chaves_existentes = aba_notas.col_values(1)
         if chave in chaves_existentes:
             print(f"Nota {chave} já existe no banco.")
             return JSONResponse(content={"msg": f"Nota {chave} já existe no banco."})
 
+        # --- RASPAGEM DA PÁGINA ---
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
         # 2. Extrair dados do Cabeçalho
         nome_mercado_el = soup.find(id="u20") or soup.find("div", class_="txtTopo")
         nome_mercado = nome_mercado_el.text.strip() if nome_mercado_el else "Mercado Não Identificado"
-        
-        cnpj_el = soup.find("div", class_="text")
-        cnpj = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', cnpj_el.text).group() if (cnpj_el and re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', cnpj_el.text)) else ""
 
         valor_total_el = soup.find(class_="txtMax") or soup.find(id="totalNota")
         valor_total_raw = valor_total_el.text.strip() if valor_total_el else "0,00"
@@ -72,8 +80,7 @@ async def processar_nota(request: Request):
 
         data_emissao = datetime.now().strftime("%d/%m/%Y")
 
-        # 3. Extrair Produtos alinhados com a planilha:
-        # A: ID_Produto | B: ID_Nota | C: Nome_Produto | D: Categoria | E: Quantidade | F: Unidade_Medida | G: Preco_Unitario | H: Preco_Total | I: Marca | J: Desconto | K: Observacoes
+        # 3. Extrair Produtos (Estrutura SVRS)
         produtos = []
         tabela_itens = soup.find(id="tabResult")
         
@@ -115,29 +122,41 @@ async def processar_nota(request: Request):
                 except:
                     vl_total_float = 0.0
 
-                # Linha com 11 colunas exatas da sua planilha:
+                # Estrutura: A: ID_Produto | B: ID_Nota | C: Nome_Produto | D: Categoria | E: Quantidade | F: Unidade_Medida | G: Preco_Unitario | H: Preco_Total | I: Marca | J: Desconto | K: Observacoes
                 produtos.append([
-                    cod_prod,          # A: ID_Produto
-                    chave,             # B: ID_Nota
-                    nome_prod,         # C: Nome_Produto
-                    "",                # D: Categoria
-                    qtd_float,         # E: Quantidade
-                    un_prod,           # F: Unidade_Medida
-                    vl_unit_float,     # G: Preco_Unitario
-                    vl_total_float,    # H: Preco_Total
-                    "",                # I: Marca
-                    0.0,               # J: Desconto
-                    ""                 # K: Observacoes
+                    cod_prod,
+                    chave,
+                    nome_prod,
+                    "",
+                    qtd_float,
+                    un_prod,
+                    vl_unit_float,
+                    vl_total_float,
+                    "",
+                    0.0,
+                    ""
                 ])
 
         if not produtos:
-            return JSONResponse(content={"erro": "Nenhum produto extraído."})
+            return JSONResponse(content={"erro": "Nenhum produto extraído do layout."})
 
-        # 4. Inserir nas abas
-        aba_notas.append_row([chave, nome_mercado, cnpj, data_emissao, valor_total_float, url])
+        # 4. Inserir na aba Notas (Ordem: A: ID_Nota | B: Data_Compra | C: Mercado | D: Valor_Total | E: Chave_Acesso | F: Status | G: Observacoes)
+        aba_notas.append_row([
+            chave,              # A: ID_Nota
+            data_emissao,       # B: Data_Compra
+            nome_mercado,       # C: Mercado
+            valor_total_float,  # D: Valor_Total
+            chave,              # E: Chave_Acesso
+            "Processado",       # F: Status
+            url_original        # G: Observacoes
+        ])
+
+        # Inserir na aba Produtos_Comprados
         aba_produtos.append_rows(produtos)
 
-        return JSONResponse(content={"msg": f"Sucesso! {len(produtos)} itens cadastrados."})
+        print(f"Sucesso! {len(produtos)} itens cadastrados.")
+        return JSONResponse(content={"msg": f"Sucesso! {len(produtos)} itens cadastrados na planilha."})
 
     except Exception as e:
+        print("Erro interno:", str(e))
         return JSONResponse(content={"erro": str(e)}, status_code=500)
