@@ -36,7 +36,7 @@ async def processar_nota(request: Request):
         if not url_original:
             return JSONResponse(content={"erro": "URL não fornecida"}, status_code=400)
 
-        # REDIRECIONAMENTO AUTOMÁTICO: Força o carregamento da página SVRS que possui os produtos
+        # Redirecionamento para portal SVRS (garante a exibição da tabela de produtos)
         match_param = re.search(r'p=([^&]+)', url_original)
         if match_param:
             param_p = match_param.group(1)
@@ -55,9 +55,11 @@ async def processar_nota(request: Request):
         match_chave = re.search(r'(\d{44})', url)
         chave = match_chave.group(1) if match_chave else "CHAVE_DESCONHECIDA"
 
-        # Trava de Duplicidade na aba Notas
-        chaves_existentes = aba_notas.col_values(1)
-        if chave in chaves_existentes:
+        # TRAVA DUPLA DE DUPLICIDADE: Checa nas duas abas antes de inserir
+        chaves_notas = set(str(c).strip() for c in aba_notas.col_values(1))
+        chaves_produtos = set(str(c).strip() for c in aba_produtos.col_values(2))
+
+        if chave in chaves_notas or chave in chaves_produtos:
             print(f"Nota {chave} já existe no banco.")
             return JSONResponse(content={"msg": f"Nota {chave} já existe no banco."})
 
@@ -122,7 +124,7 @@ async def processar_nota(request: Request):
                 except:
                     vl_total_float = 0.0
 
-                # Estrutura: A: ID_Produto | B: ID_Nota | C: Nome_Produto | D: Categoria | E: Quantidade | F: Unidade_Medida | G: Preco_Unitario | H: Preco_Total | I: Marca | J: Desconto | K: Observacoes
+                # A: ID_Produto | B: ID_Nota | C: Nome_Produto | D: Categoria | E: Quantidade | F: Unidade_Medida | G: Preco_Unitario | H: Preco_Total | I: Marca | J: Desconto | K: Observacoes
                 produtos.append([
                     cod_prod,
                     chave,
@@ -140,15 +142,15 @@ async def processar_nota(request: Request):
         if not produtos:
             return JSONResponse(content={"erro": "Nenhum produto extraído do layout."})
 
-        # 4. Inserir na aba Notas (Ordem: A: ID_Nota | B: Data_Compra | C: Mercado | D: Valor_Total | E: Chave_Acesso | F: Status | G: Observacoes)
+        # 4. Inserir na aba Notas (A: ID_Nota | B: Data_Compra | C: Mercado | D: Valor_Total | E: Chave_Acesso | F: Status | G: Observacoes)
         aba_notas.append_row([
-            chave,              # A: ID_Nota
-            data_emissao,       # B: Data_Compra
-            nome_mercado,       # C: Mercado
-            valor_total_float,  # D: Valor_Total
-            chave,              # E: Chave_Acesso
-            "Processado",       # F: Status
-            url_original        # G: Observacoes
+            chave,
+            data_emissao,
+            nome_mercado,
+            valor_total_float,
+            chave,
+            "Processado",
+            url_original
         ])
 
         # Inserir na aba Produtos_Comprados
