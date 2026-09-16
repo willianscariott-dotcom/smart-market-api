@@ -34,26 +34,34 @@ async def processar_nota(request: Request):
         url_original = data.get("url_qrcode", "").strip()
 
         if not url_original:
-            return JSONResponse(content={"erro": "URL não fornecida"}, status_code=400)
+            return JSONResponse(content={"erro": "URL ou Chave não fornecida"}, status_code=400)
 
-        # Redirecionamento para portal SVRS (garante a exibição da tabela de produtos)
-        match_param = re.search(r'p=([^&]+)', url_original)
-        if match_param:
-            param_p = match_param.group(1)
-            url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={param_p}"
-        elif re.search(r'\d{44}', url_original):
-            chave_44 = re.search(r'\d{44}', url_original).group()
-            url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave_44}"
+        # --- TRATAMENTO DE ENTRADA (URL Completa ou Apenas Chave de 44 dígitos) ---
+        entrada_limpa = url_original.replace(" ", "")
+        
+        # Se o usuário digitou apenas a chave de 44 números
+        if len(entrada_limpa) == 44 and entrada_limpa.isdigit():
+            chave = entrada_limpa
+            url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave}"
         else:
-            url = url_original
+            # Se for um link de QR Code lido pela câmera
+            match_param = re.search(r'p=([^&]+)', entrada_limpa)
+            if match_param:
+                param_p = match_param.group(1)
+                url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={param_p}"
+            elif re.search(r'\d{44}', entrada_limpa):
+                chave_44 = re.search(r'\d{44}', entrada_limpa).group()
+                url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave_44}"
+            else:
+                url = entrada_limpa
+                
+        # 1. Extrair Chave de Acesso definitiva da URL montada
+        match_chave = re.search(r'(\d{44})', url)
+        chave = match_chave.group(1) if match_chave else "CHAVE_DESCONHECIDA"
 
         sh = get_sheet()
         aba_notas = sh.worksheet("Notas")
         aba_produtos = sh.worksheet("Produtos_Comprados")
-
-        # 1. Extrair Chave de Acesso
-        match_chave = re.search(r'(\d{44})', url)
-        chave = match_chave.group(1) if match_chave else "CHAVE_DESCONHECIDA"
 
         # TRAVA DUPLA DE DUPLICIDADE: Checa nas duas abas antes de inserir
         chaves_notas = set(str(c).strip() for c in aba_notas.col_values(1))
