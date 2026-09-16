@@ -37,71 +37,80 @@ async def processar_nota(request: Request):
             return JSONResponse(content={"erro": "URL ou Chave não fornecida"}, status_code=400)
 
         entrada_limpa = url_original.replace(" ", "")
-        
-        # 1. Identificar Chave e Gerar Lista de URLs para tentativa (Fallback)
-        urls_testar = []
+        session = requests.Session()
+        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+
+        soup = None
+        chave = "CHAVE_DESCONHECIDA"
+
+        # --- FLUXO 1: ENTRADA DE CHAVE MANUAL (44 DÍGITOS) ---
         if len(entrada_limpa) == 44 and entrada_limpa.isdigit():
             chave = entrada_limpa
-            urls_testar = [
-                f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave}",
-                f"https://www.sefaz.rs.gov.br/NFCE/NFCE-COM.aspx?chNFe={chave}",
-                f"https://www.sefaz.rs.gov.br/NFCE/NFCE-COM.aspx?p={chave}",
-                f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave}|2|1|1"
-            ]
+            url_sefaz = f"https://www.sefaz.rs.gov.br/NFE/NFE-NFC.aspx?chaveNFe={chave}"
+            
+            # Etapa 1: Acessar página inicial do formulário
+            r1 = session.get(url_sefaz, timeout=12)
+            soup1 = BeautifulSoup(r1.text, 'html.parser')
+
+            # Verificar se os produtos já estão visíveis
+            tabela_temp = soup1.find(id="tabResult") or soup1.find("table", class_="tabResult")
+            
+            if tabela_temp:
+                soup = soup1
+            else:
+                # Etapa 2: Simular o clique no botão "Avançar" (POST com ViewState)
+                form = soup1.find("form")
+                if form:
+                    action_url = form.get("action", "")
+                    if not action_url.startswith("http"):
+                        action_url = "https://www.sefaz.rs.gov.br/NFE/" + action_url.lstrip("/")
+
+                    payload_post = {}
+                    for inp in soup1.find_all("input"):
+                        name = inp.get("name")
+                        val = inp.get("value", "")
+                        if name:
+                            payload_post[name] = val
+
+                    r2 = session.post(action_url, data=payload_post, timeout=12)
+                    soup = BeautifulSoup(r2.text, 'html.parser')
+                else:
+                    soup = soup1
+
+        # --- FLUXO 2: ENTRADA VIA QR CODE (LINK COM PARAMETROS) ---
         else:
             match_param = re.search(r'p=([^&]+)', entrada_limpa)
             match_chave = re.search(r'(\d{44})', entrada_limpa)
             chave = match_chave.group(1) if match_chave else "CHAVE_DESCONHECIDA"
-            
-            if match_param:
-                param_p = match_param.group(1)
-                urls_testar = [
-                    f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={param_p}",
-                    f"https://www.sefaz.rs.gov.br/NFCE/NFCE-COM.aspx?p={param_p}"
-                ]
-            else:
-                urls_testar = [entrada_limpa]
 
+            url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={match_param.group(1)}" if match_param else entrada_limpa
+            r = session.get(url, timeout=12)
+            soup = BeautifulSoup(r.text, 'html.parser')
+
+        if not soup:
+            return JSONResponse(content={"erro": "Não foi possível carregar o portal da SEFAZ."})
+
+        # --- VALIDAÇÃO DE BANCO E DUPLICIDADE ---
         sh = get_sheet()
         aba_notas = sh.worksheet("Notas")
         aba_produtos = sh.worksheet("Produtos_Comprados")
 
-        # Trava de Duplicidade Dupla
         chaves_notas = set(str(c).strip() for c in aba_notas.col_values(1))
         chaves_produtos = set(str(c).strip() for c in aba_produtos.col_values(2))
 
         if chave in chaves_notas or chave in chaves_produtos:
             return JSONResponse(content={"msg": f"Nota {chave} já existe no banco."})
 
-        # 2. Raspagem com fallback entre URLs do Governo
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        soup = None
-        produtos = []
-        nome_mercado = "Mercado Não Identificado"
-        valor_total_float = 0.0
-
-        for url_tentativa in urls_testar:
-            try:
-                response = requests.get(url_tentativa, headers=headers, timeout=12)
-                soup_temp = BeautifulSoup(response.text, 'html.parser')
-                tabela_temp = soup_temp.find(id="tabResult") or soup_temp.find("table", class_="tabResult")
-                
-                if tabela_temp and tabela_temp.find_all("tr"):
-                    soup = soup_temp
-                    tabela_itens = tabela_temp
-                    break
-            except:
-                continue
-
-        if not soup or not tabela_itens:
+        # --- EXTRAÇÃO DOS PRODUTOS E CABEÇALHO ---
+        tabela_itens = soup.find(id="tabResult") or soup.find("table", class_="tabResult")
+        if not tabela_itens:
             return JSONResponse(content={"erro": "Nenhum produto extraído do layout."})
 
-        # 3. Extração dos dados
         nome_mercado_el = soup.find(id="u20") or soup.find("div", class_="txtTopo")
-        if nome_mercado_el:
-            nome_mercado = nome_mercado_el.text.strip()
+        nome_mercado = nome_mercado_el.text.strip() if nome_mercado_el else "Mercado Não Identificado"
 
         valor_total_el = soup.find(class_="txtMax") or soup.find(id="totalNota")
+        valor_total_float = 0.0
         if valor_total_el:
             try:
                 valor_total_clean = valor_total_el.text.strip().replace(".", "").replace(",", ".")
@@ -110,6 +119,7 @@ async def processar_nota(request: Request):
                 valor_total_float = 0.0
 
         data_emissao = datetime.now().strftime("%d/%m/%Y")
+        produtos = []
 
         linhas = tabela_itens.find_all("tr")
         for tr in linhas:
@@ -154,7 +164,7 @@ async def processar_nota(request: Request):
         if not produtos:
             return JSONResponse(content={"erro": "Nenhum produto extraído do layout."})
 
-        # 4. Inserção final no Google Sheets
+        # --- GRAVAÇÃO NA PLANILHA ---
         aba_notas.append_row([
             chave, data_emissao, nome_mercado, valor_total_float, chave, "Processado", url_original
         ])
