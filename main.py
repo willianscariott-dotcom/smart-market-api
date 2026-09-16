@@ -11,8 +11,11 @@ from datetime import datetime
 
 app = FastAPI(title="Smart Market RS - Extrator NFC-e")
 
-# Configuração do Google Sheets
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+# Configuração do Google Sheets E Google Drive (Corrigido o Erro 403)
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+]
 CREDENTIALS_FILE = 'credentials.json'
 
 def get_sheet():
