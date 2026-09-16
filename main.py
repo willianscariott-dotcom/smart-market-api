@@ -39,23 +39,22 @@ async def processar_nota(request: Request):
         # --- TRATAMENTO DE ENTRADA (URL Completa ou Apenas Chave de 44 dígitos) ---
         entrada_limpa = url_original.replace(" ", "")
         
-        # Se o usuário digitou apenas a chave de 44 números
+        # Se o usuário digitou apenas a chave de 44 números, adicionamos o sufixo |2|1|1 que a SVRS exige
         if len(entrada_limpa) == 44 and entrada_limpa.isdigit():
             chave = entrada_limpa
-            url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave}"
+            url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave}|2|1|1"
         else:
-            # Se for um link de QR Code lido pela câmera
             match_param = re.search(r'p=([^&]+)', entrada_limpa)
             if match_param:
                 param_p = match_param.group(1)
                 url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={param_p}"
             elif re.search(r'\d{44}', entrada_limpa):
                 chave_44 = re.search(r'\d{44}', entrada_limpa).group()
-                url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave_44}"
+                url = f"https://dfe-portal.svrs.rs.gov.br/Dfe/QrCodeNfce?p={chave_44}|2|1|1"
             else:
                 url = entrada_limpa
                 
-        # 1. Extrair Chave de Acesso definitiva da URL montada
+        # 1. Extrair Chave de Acesso de 44 dígitos
         match_chave = re.search(r'(\d{44})', url)
         chave = match_chave.group(1) if match_chave else "CHAVE_DESCONHECIDA"
 
@@ -63,7 +62,7 @@ async def processar_nota(request: Request):
         aba_notas = sh.worksheet("Notas")
         aba_produtos = sh.worksheet("Produtos_Comprados")
 
-        # TRAVA DUPLA DE DUPLICIDADE: Checa nas duas abas antes de inserir
+        # TRAVA DUPLA DE DUPLICIDADE
         chaves_notas = set(str(c).strip() for c in aba_notas.col_values(1))
         chaves_produtos = set(str(c).strip() for c in aba_produtos.col_values(2))
 
@@ -150,7 +149,7 @@ async def processar_nota(request: Request):
         if not produtos:
             return JSONResponse(content={"erro": "Nenhum produto extraído do layout."})
 
-        # 4. Inserir na aba Notas (A: ID_Nota | B: Data_Compra | C: Mercado | D: Valor_Total | E: Chave_Acesso | F: Status | G: Observacoes)
+        # 4. Inserir na aba Notas
         aba_notas.append_row([
             chave,
             data_emissao,
