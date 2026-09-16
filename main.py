@@ -11,7 +11,7 @@ from datetime import datetime
 
 app = FastAPI(title="Smart Market RS - Extrator NFC-e")
 
-# Configuração do Google Sheets E Google Drive (Corrigido o Erro 403)
+# Permissões do Google Sheets E Google Drive (Impede o erro 403)
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive'
@@ -21,7 +21,7 @@ CREDENTIALS_FILE = 'credentials.json'
 def get_sheet():
     credentials = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
     gc = gspread.authorize(credentials)
-    # Certifique-se de que o nome aqui é EXATAMENTE o nome do seu arquivo no Google Drive
+    # Certifique-se de que o nome é EXATAMENTE o mesmo da sua planilha no Google Drive
     sh = gc.open('Smart_Market_DB') 
     return sh
 
@@ -48,10 +48,10 @@ async def processar_nota(request: Request):
             if "MOCK_CHAVE_123" in chaves_existentes:
                 return JSONResponse(content={"msg": "Nota MOCK já existe."})
             
-            aba_notas.append_row(["MOCK_CHAVE_123", "Mercado Mock", "00.000.000/0001-00", datetime.now().strftime("%d/%m/%Y %H:%M"), "50,00", url])
+            aba_notas.append_row(["MOCK_CHAVE_123", "Mercado Mock", "00.000.000/0001-00", datetime.now().strftime("%d/%m/%Y %H:%M"), 50.00, url])
             aba_produtos.append_rows([
-                ["MOCK_CHAVE_123", "Arroz 5kg MOCK", "1", "UN", "25,00", "25,00", "111"],
-                ["MOCK_CHAVE_123", "Feijão 1kg MOCK", "2", "UN", "12,50", "25,00", "222"]
+                ["MOCK_CHAVE_123", "Arroz 5kg MOCK", 1.0, "UN", 25.00, 25.00, "111"],
+                ["MOCK_CHAVE_123", "Feijão 1kg MOCK", 2.0, "UN", 12.50, 25.00, "222"]
             ])
             return JSONResponse(content={"msg": "Sucesso! MOCK cadastrado."})
 
@@ -78,8 +78,14 @@ async def processar_nota(request: Request):
         cnpj_el = soup.find("div", class_="text")
         cnpj = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', cnpj_el.text).group() if (cnpj_el and re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', cnpj_el.text)) else ""
 
+        # Processa o Valor Total da Nota convertendo vírgula para ponto (Float)
         valor_total_el = soup.find(class_="txtMax") or soup.find(id="totalNota")
-        valor_total = valor_total_el.text.strip() if valor_total_el else "0,00"
+        valor_total_raw = valor_total_el.text.strip() if valor_total_el else "0,00"
+        try:
+            valor_total_clean = valor_total_raw.replace(".", "").replace(",", ".").strip()
+            valor_total_float = float(re.sub(r'[^\d.]', '', valor_total_clean))
+        except:
+            valor_total_float = 0.0
 
         data_emissao = datetime.now().strftime("%d/%m/%Y")
 
@@ -100,25 +106,42 @@ async def processar_nota(request: Request):
                 cod_prod = re.sub(r'\D', '', cod_el.text) if cod_el else ""
                 
                 qtd_el = tr.find("span", class_="Rqtd")
-                qtd_prod = qtd_el.text.replace("Qtde.:", "").strip() if qtd_el else "1"
+                qtd_raw = qtd_el.text.replace("Qtde.:", "").strip() if qtd_el else "1"
+                try:
+                    qtd_float = float(qtd_raw.replace(",", "."))
+                except:
+                    qtd_float = 1.0
                 
                 un_el = tr.find("span", class_="RUN")
                 un_prod = un_el.text.replace("UN: ", "").strip() if un_el else "UN"
                 
+                # Converte Valor Unitário ("2,99" -> 2.99)
                 vl_unit_el = tr.find("span", class_="RvlUnit")
-                vl_unit = vl_unit_el.text.replace("Vl. Unit.:", "").strip() if vl_unit_el else "0,00"
+                vl_unit_raw = vl_unit_el.text.replace("Vl. Unit.:", "").strip() if vl_unit_el else "0,00"
+                try:
+                    vl_unit_clean = vl_unit_raw.replace(".", "").replace(",", ".")
+                    vl_unit_float = float(re.sub(r'[^\d.]', '', vl_unit_clean))
+                except:
+                    vl_unit_float = 0.0
                 
+                # Converte Valor Total do Item ("2,99" -> 2.99)
                 vl_total_el = tr.find("span", class_="valor")
-                vl_total = vl_total_el.text.strip() if vl_total_el else "0,00"
+                vl_total_raw = vl_total_el.text.strip() if vl_total_el else "0,00"
+                try:
+                    vl_total_clean = vl_total_raw.replace(".", "").replace(",", ".")
+                    vl_total_float = float(re.sub(r'[^\d.]', '', vl_total_clean))
+                except:
+                    vl_total_float = 0.0
 
-                # Insere o array correspondente às colunas: ID_Nota, Nome, Qtd, UN, Vl Unit, Vl Total, Código
-                produtos.append([chave, nome_prod, qtd_prod, un_prod, vl_unit, vl_total, cod_prod])
+                # Insere o array com valores numéricos reais
+                # Estrutura: ID_Nota, Nome, Qtd, UN, Vl Unit, Vl Total, Código
+                produtos.append([chave, nome_prod, qtd_float, un_prod, vl_unit_float, vl_total_float, cod_prod])
 
         if not produtos:
             return JSONResponse(content={"erro": "Nenhum produto extraído. Layout da nota incompatível."})
 
         # 4. Inserir no Sheets
-        aba_notas.append_row([chave, nome_mercado, cnpj, data_emissao, valor_total, url])
+        aba_notas.append_row([chave, nome_mercado, cnpj, data_emissao, valor_total_float, url])
         aba_produtos.append_rows(produtos)
 
         print(f"Sucesso! {len(produtos)} itens cadastrados.")
